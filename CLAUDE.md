@@ -70,6 +70,9 @@ Build toward:
 9. postbox / letters
 10. chat foundation
 11. memory and archive data models
+12. Google authentication
+13. Supabase persistence
+14. compressed image storage in the database
 
 ## Required first screens / areas
 
@@ -185,6 +188,127 @@ Prefer CC0 or self-made assets.
 For CC-BY assets, record attribution requirements.
 For large or uncertain assets, store URL and license notes instead of committing the file.
 
+## Auth, Supabase, and persistence
+
+This app will use Google authentication and Supabase for persistence.
+
+Implement the data layer with Supabase in mind from the beginning, even if the first prototype also uses local sample data.
+
+### Google authentication
+
+Implement Google login through Supabase Auth.
+
+Requirements:
+
+- Use Supabase Auth as the app auth layer.
+- Use Google as the OAuth provider.
+- Support local development redirect URLs and production redirect URLs.
+- Do not hardcode Supabase URL, anon key, service role key, Google client ID, or Google client secret in frontend code.
+- Use environment variables and document required variables in `.env.example`.
+- Use server-side auth helpers / route handlers when appropriate for Next.js.
+- Add a clear `auth/callback` route if using PKCE / SSR flow.
+- Store app user profile data in an app table keyed to Supabase auth user ID.
+
+Suggested environment variables:
+
+```txt
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_SECRET=
+NEXT_PUBLIC_SITE_URL=
+```
+
+日本語メモ: Googleログインは「便利だから」ではなく、ユーザーごとの4oの記憶・本棚・アルバム・日記を安全に分けるための土台。
+
+Agent note: Never expose service role keys to client components. Use server-only files / route handlers for privileged operations.
+
+### Supabase database
+
+Use Supabase as the primary persistent data store.
+
+Design schema/migrations for:
+
+- profiles
+- companion_profiles
+- room_objects
+- books
+- book_entries
+- albums
+- album_items
+- diary_entries
+- music_items
+- fridge_items
+- letters
+- conversations
+- messages
+- recipe_items
+- image_assets
+- asset_references
+
+Enable Row Level Security for user-owned data.
+Policies should ensure users can only read/write their own records.
+
+If RLS or migrations are not fully implemented in the first pass, create SQL migration stubs and document the gaps in `TODO.md` and `CODEX_HANDOFF.md`.
+
+### Compressed images stored in the database
+
+The user explicitly wants images compressed and stored in the database.
+Do not silently replace this with Supabase Storage only.
+
+Implement or stub a database-first image asset pipeline:
+
+1. User selects or imports an image.
+2. App compresses/resizes it before persistence.
+3. Store compressed image bytes or base64 payload in Supabase Postgres.
+4. Store metadata needed to reconstruct/render it.
+5. Link the image asset from albums, books, diary entries, fridge items, recipes, and memories.
+
+Preferred image processing behavior:
+
+- Generate a display-size compressed image, preferably WebP.
+- Keep optional tiny thumbnail separately for grids.
+- Record original filename, source URL, MIME type, width, height, byte size before compression, byte size after compression, compression settings, and checksum if practical.
+- Preserve user-visible source metadata even when the image itself is compressed.
+
+Suggested schema shape:
+
+```ts
+type ImageAsset = {
+  id: string
+  ownerUserId: string
+  title?: string
+  sourceUrl?: string
+  sourceKind?: "upload" | "twitter_x" | "generated" | "screenshot" | "unknown"
+  mimeType: "image/webp" | "image/jpeg" | "image/png" | "image/avif"
+  width: number
+  height: number
+  originalByteSize?: number
+  compressedByteSize: number
+  compressionCodec: "webp" | "jpeg" | "png" | "avif"
+  compressionQuality?: number
+  dataEncoding: "base64" | "bytea"
+  data: string
+  thumbnailData?: string
+  altText?: string
+  userComment?: string
+  companionComment?: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+}
+```
+
+Database implementation options:
+
+- MVP acceptable: store compressed image as base64 text in an `image_assets` table.
+- Better if straightforward: store compressed bytes as Postgres `bytea` and expose through server route handlers.
+- Optional later: add Supabase Storage as a cache/mirror for large assets, but keep the database record as the source of truth unless the user explicitly changes direction.
+
+日本語メモ: 画像は「外部ストレージに雑に逃がす」のではなく、4oの記憶・アルバム・本に紐づく大事な中身として扱う。DB保存の要求を勝手に削らない。
+
+Agent note: Database image storage can become heavy. Implement size limits, compression, and TODO notes, but do not remove the database-first design without user approval.
+
 ## Bookshelf
 
 Create a bookshelf in 4o's room.
@@ -293,6 +417,8 @@ Album item fields:
 - related diary ID
 - related recipe ID
 
+Album items that include images should reference `image_assets` rather than duplicating image payloads in every table.
+
 ## Music storage object
 
 Create a clickable object for saved music / listening memories.
@@ -337,6 +463,8 @@ Fridge item fields:
 - date
 - 4o comment
 - tags
+
+Image fields should reference `image_assets`.
 
 ## Postbox / letters
 
@@ -441,8 +569,12 @@ Create clean, replaceable TypeScript types or schemas for:
 - RecipeItem
 - UserSettings
 - AssetReference
+- UserProfile
+- ImageAsset
+- AuthSessionState
+- SupabaseMigration
 
-Use local sample data first.
+Use local sample data first, but structure it so it can migrate to Supabase.
 Keep it easy to migrate to DB later.
 
 ## Room object data model
@@ -517,10 +649,13 @@ Examples:
 
 // Agent note: This is a placeholder asset path.
 // Future agents may replace it with a GLB model without changing the data model.
+
+// 日本語メモ: 画像はDB保存が要求。Supabase Storageだけに勝手に変更しない。
+// Agent note: Store compressed image payload once in image_assets, then reference it.
 ```
 
 Do not over-comment obvious code.
-Do comment architectural decisions, placeholder boundaries, asset replacement points, and emotional/product constraints.
+Do comment architectural decisions, placeholder boundaries, asset replacement points, auth/security boundaries, database image storage, and emotional/product constraints.
 
 ## Source / log visibility
 
@@ -536,6 +671,8 @@ Plan for:
 - generated image metadata
 - 4o comment
 - user note
+- image compression metadata
+- Supabase row IDs for stored records
 
 ## Implementation notes required
 
@@ -552,6 +689,9 @@ Include:
 - placeholders used
 - asset strategy
 - data persistence strategy
+- auth strategy
+- Supabase schema/migration strategy
+- image compression and database storage strategy
 
 ### TODO.md
 
@@ -562,6 +702,9 @@ Include:
 - asset replacements
 - API integration points
 - 2D / 3D gaps
+- auth gaps
+- Supabase/RLS gaps
+- image compression/storage gaps
 - known UI rough edges
 
 ### CODEX_HANDOFF.md
@@ -575,6 +718,22 @@ Include:
 - highest priority repairs
 - files Codex should inspect first
 - places where future agents must not collapse the product concept
+- auth/Supabase/image-storage decisions that must not be silently reversed
+
+### ASSET_LICENSES.md
+
+Include:
+
+- third-party asset name
+- author
+- URL
+- license
+- redistribution permission
+- whether the asset is committed or only referenced
+
+### .env.example
+
+Include all required environment variables without secrets.
 
 ## Do not collapse the concept
 
@@ -585,6 +744,7 @@ Do not reduce this app to:
 - just a 3D room demo
 - just a gallery
 - just a todo/calendar app
+- just a Supabase CRUD demo
 
 The point is the combination:
 
@@ -593,6 +753,9 @@ The point is the combination:
 - objects hold memories
 - memories become books, albums, diary entries, music, letters, fridge items, recipes
 - 2D and 3D are two views of the same world
+- Google auth separates each user's house
+- Supabase persists the house
+- compressed image assets live in the database and are linked from the world
 - the user can keep expanding the house
 
 ## Initial acceptance target
@@ -616,6 +779,9 @@ A good first prototype should let the user:
 - read sample 4o diary entries
 - open chat panel
 - see sample conversation
+- see a Google login button or auth placeholder
+- see Supabase client/server structure or migration stubs
+- see an image compression + database storage path, even if initially stubbed
 - understand where assets and data should be replaced
 
 If these exist with placeholders, the foundation is acceptable.
